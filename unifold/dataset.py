@@ -161,7 +161,6 @@ def load(
     asym_len = np.array([c["seq_length"] for c in all_chain_features], dtype=np.int64)
     if is_monomer:
         all_chain_features = all_chain_features[0]
-        all_chain_features
     else:
         all_chain_features = pair_and_merge(all_chain_features)
         all_chain_features = post_process(all_chain_features)

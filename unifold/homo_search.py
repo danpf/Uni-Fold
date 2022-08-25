@@ -25,11 +25,8 @@ from absl import app
 from absl import flags
 from absl import logging
 
-from unifold.data.utils import compress_features
-from unifold.msa import parsers
-from unifold.msa import pipeline
-from unifold.msa import templates
-from unifold.msa.utils import divide_multi_chains
+from unifold.data.utils import compress_features, divide_multi_chains
+from unifold.msa import parsers, pipeline, templates
 from unifold.msa.tools import hmmsearch
 
 

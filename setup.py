@@ -34,6 +34,7 @@ setup(
         "numpy",
         "pandas",
         "scipy",
+        "simple-parsing",
     ],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
