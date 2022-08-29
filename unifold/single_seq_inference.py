@@ -69,6 +69,7 @@ def parseargs(args_in: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--max-recycling-iters", type=int, default=3, help="the a3m files to use (will use the same for every sequence)")
     parser.add_argument("--num-ensembles", type=int, default=2, help="the a3m files to use (will use the same for every sequence)")
     parser.add_argument("--manual-seed", type=int, default=42, help="the a3m files to use (will use the same for every sequence)")
+    parser.add_argument("--jumpstart-pdb-file", help="Template PDB file to use (numbering from 0 must match)")
     parser.add_argument("--times", type=int, default=3, help="the a3m files to use (will use the same for every sequence)")
     args = parser.parse_args(args_in)
     if args.sequence_ids:
@@ -146,9 +147,12 @@ def get_a3m_lines(files: Sequence[str], ignore_first: bool = True) -> List[str]:
     return out_lines
 
 
-def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines: Sequence[str], foldsettings: FoldSettings):
+def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines: Sequence[str], jumpstart_pdb_file: str, foldsettings: FoldSettings):
     if a3m_lines:
         assert False, "Broken"
+    jumpstart_protein = None
+    if jumpstart_pdb_file:
+        jumpstart_protein = protein.from_pdb_string(open(jumpstart_pdb_file).read())
 
     is_multimer = False
     for seq_to_fold in seqs_to_fold:
@@ -212,7 +216,6 @@ def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines:
     config.data.common.max_recycling_iters = max_recycling_iters
     config.globals.max_recycling_iters = max_recycling_iters
     config.data.predict.num_ensembles = num_ensembles
-
 # faster prediction with large chunk
     config.globals.chunk_size = 128
     model = AlphaFold(config)
@@ -224,7 +227,39 @@ def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines:
     model.eval()
     model.inference_mode()
 
-# data path is based on target_name
+
+    def _dump_every_recycle(base_fn: str):
+        def dump_every_recycle(batch, out, iter_: int, model: AlphaFold):
+            t = time.perf_counter()
+            
+            out.update(model.aux_heads(out))
+            def to_float(x):
+                if x.dtype == torch.bfloat16 or x.dtype == torch.half:
+                    return x.float()
+                else:
+                    return x
+            # Toss out the recycling dimensions --- we don't need them anymore
+            batch = tensor_tree_map(lambda t: t[-1, 0, ...], batch)
+            batch = tensor_tree_map(to_float, batch)
+            out = tensor_tree_map(lambda t: t[0, ...], out)
+            out = tensor_tree_map(to_float, out)
+            batch = tensor_tree_map(lambda x: np.array(x.cpu()), batch)
+            out = tensor_tree_map(lambda x: np.array(x.cpu()), out)
+            plddt = out["plddt"]
+            plddt_b_factors = np.repeat(
+                plddt[..., None], residue_constants.atom_type_num, axis=-1
+            )
+            # TODO: , may need to reorder chains, based on entity_ids
+            cur_protein = protein.from_prediction(
+                features=batch, result=out, b_factors=plddt_b_factors
+            )
+            save_name = f"{base_fn}_recy-{iter_:02}.pdb"
+            print(f"time to write pdb time: {time.perf_counter() - t:.1f} sec -- Writing... {save_name}")
+            with open(save_name, "w") as f:
+                f.write(protein.to_pdb(cur_protein))
+        return dump_every_recycle
+
+    # data path is based on target_name
     cur_param_path_postfix = os.path.split(param_path)[-1]
     for seq_to_fold in seqs_to_fold:
         output_dir = os.path.join(output_dir_master, str(seq_to_fold.id_))
@@ -247,7 +282,13 @@ def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines:
                 use_uniprot=is_multimer,
             )
             seq_len = batch["aatype"].shape[-1]
+            if jumpstart_protein:
+                batch["x_prev"] = jumpstart_protein.atom_positions
             model.globals.chunk_size = automatic_chunk_size(seq_len)
+
+            cur_save_name = (
+                f"{cur_param_path_postfix}_{cur_seed}"
+            )
 
             with torch.no_grad():
                 batch = {
@@ -257,7 +298,7 @@ def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines:
                 shapes = {k: v.shape for k, v in batch.items()}
                 print(shapes)
                 t = time.perf_counter()
-                out = model(batch)
+                out = model(batch, _dump_every_recycle(os.path.join(output_dir, cur_save_name)))
                 print(f"Inference time: {time.perf_counter() - t}")
 
             def to_float(x):
@@ -282,9 +323,6 @@ def main(seqs_to_fold: Sequence[ToFoldInput], output_dir_master: str, a3m_lines:
             # TODO: , may need to reorder chains, based on entity_ids
             cur_protein = protein.from_prediction(
                 features=batch, result=out, b_factors=plddt_b_factors
-            )
-            cur_save_name = (
-                f"{cur_param_path_postfix}_{cur_seed}"
             )
             plddts[cur_save_name] = str(mean_plddt)
             if is_multimer:
@@ -364,7 +402,7 @@ def commandline_main(_args: List[str]) -> None:
         seqs_to_fold = [ToFoldInput(x, f"{i:04}") for i, x in enumerate(args.sequences)]
     # a3m_lines = get_a3m_lines(args.a3m_lines)
     # a3m_lines = []
-    main(seqs_to_fold, args.output_dir, a3m_lines=[], foldsettings)
+    main(seqs_to_fold, args.output_dir, a3m_lines=[], jumpstart_pdb_file=args.jumpstart_pdb_file, foldsettings=foldsettings)
 
 
 if __name__ == "__main__":

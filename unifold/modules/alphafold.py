@@ -407,7 +407,7 @@ class AlphaFold(nn.Module):
 
         return outputs, m_1_prev, z_prev, x_prev
 
-    def forward(self, batch):
+    def forward(self, batch, post_recycle_callback = None):
 
         m_1_prev = batch.get("m_1_prev", None)
         z_prev = batch.get("z_prev", None)
@@ -440,6 +440,8 @@ class AlphaFold(nn.Module):
                     num_recycling=num_iters,
                     num_ensembles=num_ensembles,
                 )
+                if post_recycle_callback is not None:
+                    post_recycle_callback(batch, outputs, cycle_no, self)
             if not is_final_iter:
                 del outputs
 
